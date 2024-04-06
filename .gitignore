@@ -2,3 +2,4 @@ transformers
 cached*
 .*
 experiments
+*.out
