@@ -1,4 +1,5 @@
 import os
+from re import split
 
 import dotenv
 import neptune
@@ -63,6 +64,16 @@ def _setup():
         EXPERIMENT_DIR.mkdir(parents=True)
 
 
+def _get_dataset(tokenizer):
+    # Fetching the smallest variant of C4. Available variants are:
+    # - en: 305GB in JSON format
+    # - en.noblocklist: 380GB in JSON format
+    # - en.noclean: 2.3TB in JSON format
+    # - realnewslike: 15GB in JSON format
+    dataset = load_dataset("c4", "realnewslike")
+    return dataset.map(lambda x: tokenizer(x["text"], truncation=True), batched=True)
+
+
 def main():
     _setup()
     _init_neptune_run()
@@ -74,17 +85,10 @@ def main():
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2", vocab_size=config.vocab_size)
     tokenizer.pad_token = tokenizer.eos_token
 
+    dataset = _get_dataset(tokenizer)
+
     model = MoTLMHeadModel(config)
     model.train()
-
-    # Fetching the smallest variant of C4. Available variants are:
-    # - en: 305GB in JSON format
-    # - en.noblocklist: 380GB in JSON format
-    # - en.noclean: 2.3TB in JSON format
-    # - realnewslike: 15GB in JSON format
-    dataset = load_dataset("c4", "realnewslike")
-
-    tokenized_dataset = dataset.map(lambda x: tokenizer(x["text"], truncation=True), batched=True)
 
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
@@ -98,8 +102,8 @@ def main():
         model=model,
         args=training_args,
         data_collator=data_collator,
-        train_dataset=tokenized_dataset["train"],
-        eval_dataset=tokenized_dataset["validation"],
+        train_dataset=dataset["train"],
+        eval_dataset=dataset["validation"],
         tokenizer=tokenizer,
     )
 
