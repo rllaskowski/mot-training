@@ -7,5 +7,4 @@
 #SBATCH --time=15
 #SBATCH --output=mixture-of-tokens-team-ml.out
 
-source /home/rllaskowski/venv/bin/activate
 python train.py
