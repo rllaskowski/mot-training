@@ -1,33 +1,30 @@
+import argparse
 import os
-from re import split
+from dataclasses import dataclass
+from pathlib import Path
+from re import T
 
 import dotenv
 import neptune
 from datasets import load_dataset
 
 import transformers
-from transformers import (
-    DataCollatorForLanguageModeling,
-    GPT2Tokenizer,
-    MoTConfig,
-    MoTLMHeadModel,
-    Trainer,
-    TrainingArguments,
-)
-from pathlib import Path
-
+from transformers import DataCollatorForLanguageModeling
+from transformers import GPT2TokenizerFast as GPT2Tokenizer
+from transformers import MoTConfig, MoTLMHeadModel, Trainer, TrainingArguments
+from transformers.integrations import NeptuneCallback
 
 EXPERIMENTS = {
-    # Original MoT model config from the paper
-    # https://arxiv.org/pdf/2310.15961.pdf
     "mot_paper_small_c4": {
+        # Original MoT model config from the paper
+        # https://arxiv.org/pdf/2310.15961.pdf
         "mot_config": {
             "vocab_size": 50257,
             "n_positions": 1024,
-            "2048"
-            "n_embd": 256,
+            "expert_size": 2048,
+            "n_embd": 512,
             "n_layer": 8,
-            "n_head": 4,
+            "n_head": 8,
             "n_inner": 1024,
             "group_size": 32,
         },
@@ -38,26 +35,79 @@ EXPERIMENTS = {
             "overwrite_output_dir": True,
             "max_steps": 150_000,
             "save_steps": 10_000,
+            #"bf16": True,
+            "fp16": True,
+            # "do_eval": False,
+            # "evaluation_strategy": "steps",
+            # "eval_steps": 50,
             "save_total_limit": 2,
+            "logging_steps": 100,
         },
         "dataset": ["c4", "realnewslike"],
         "tokenizer": {
-            "from_pretrained": "gpt2",
+            "config": "gpt2",
             "args": {
                 "vocab_size": 50257,
                 "batched": True,
                 "max_length": 256,
-            }
-        }
-    }
+            },
+        },
+    },
+    "really_small_c4": {
+        "mot_config": {
+            "vocab_size": 50257,
+            "n_positions": 1024,
+            "expert_size": 2048,
+            "n_embd": 64,
+            "n_layer": 1,
+            "n_head": 2,
+            "n_inner": 128,
+            "group_size": 4,
+        },
+        "training_args": {
+            "learning_rate": 7e-4,
+            "per_device_train_batch_size": 8,
+            "per_device_eval_batch_size": 8,
+            "overwrite_output_dir": True,
+            "max_steps": 150,
+            "save_steps": 150,
+            "save_total_limit": 2,
+        },
+        "dataset": ["c4", "realnewslike"],
+        "tokenizer": {
+            "config": "gpt2",
+            "args": {
+                "vocab_size": 50257,
+                "batched": True,
+                "max_length": 256,
+            },
+        },
+    },
 }
 
-TORCH_VERBOSITY_INFO = False
 BASE_DIR = Path(__file__).resolve().parent
 
-EXPERIMENT_NAME = "mot_paper_small_c4"
 
-EXPERIMENT_DIR = BASE_DIR / "experiments" / EXPERIMENT_NAME
+@dataclass
+class Args:
+
+    experiment_name: str
+    torch_verbosity_info: bool
+
+    @classmethod
+    def from_args(cls):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--experiment-name", type=str, required=True)
+        parser.add_argument("--torch-verbosity-info", action="store_true", default=True)
+        return cls(**vars(parser.parse_args()))
+
+    @property
+    def experiment_dir(self):
+        return BASE_DIR / "experiments" / self.experiment_name
+
+    def __post_init__(self):
+        if self.experiment_name not in EXPERIMENTS:
+            raise ValueError(f"Unknown experiment name: {self.experiment_name}")
 
 
 def _init_neptune_run():
@@ -67,44 +117,48 @@ def _init_neptune_run():
     )
 
 
-def _setup():
+def _setup() -> Args:
+    args = Args.from_args()
+
     dotenv.load_dotenv()
-    if TORCH_VERBOSITY_INFO:
+    if args.torch_verbosity_info:
         transformers.logging.set_verbosity_info()
 
-    if not EXPERIMENT_DIR.exists():
-        EXPERIMENT_DIR.mkdir(parents=True)
+    if not os.path.exists(args.experiment_dir):
+        os.makedirs(args.experiment_dir)
+
+    return args
 
 
-def _get_dataset(tokenizer):
-    # Fetching the smallest variant of C4. Available variants are:
-    # - en: 305GB in JSON format
-    # - en.noblocklist: 380GB in JSON format
-    # - en.noclean: 2.3TB in JSON format
-    # - realnewslike: 15GB in JSON format
-    dataset_dir = '/local_storage_1/rllaskowski/'
-    dataset = load_dataset(**EXPERIMENTS[EXPERIMENT_NAME]["dataset"], data_dir=dataset_dir)
-    return dataset.map(lambda x: tokenizer(x["text"], truncation=True), batched=True)
+def _get_dataset(tokenizer, args: Args):
+    raw_dataset = load_dataset(*EXPERIMENTS[args.experiment_name]["dataset"], streaming=True)
+
+    def tokenize_fn(examples):
+        return tokenizer(examples["text"], truncation=True)
+
+    tokenized_dataset = raw_dataset.map(tokenize_fn, batched=True)
+
+    return tokenized_dataset
 
 
-def _get_tokenizer():
+def _get_tokenizer(args: Args):
     tokenizer = GPT2Tokenizer.from_pretrained(
-        EXPERIMENTS[EXPERIMENT_NAME]["tokenizer"]["from_pretrained"],
-        **EXPERIMENTS[EXPERIMENT_NAME]["tokenizer"]["args"],
+        EXPERIMENTS[args.experiment_name]["tokenizer"]["config"],
+        **EXPERIMENTS[args.experiment_name]["tokenizer"]["args"],
     )
-
     tokenizer.pad_token = tokenizer.eos_token
+
     return tokenizer
 
 
 def main():
-    _setup()
-    _init_neptune_run()
+    args = _setup()
 
-    experiment = EXPERIMENTS[EXPERIMENT_NAME]
+    experiment = EXPERIMENTS[args.experiment_name]
 
-    tokenizer = _get_tokenizer()
-    dataset = _get_dataset(tokenizer)
+    run = _init_neptune_run()
+    tokenizer = _get_tokenizer(args)
+    dataset = _get_dataset(tokenizer, args)
 
     config = MoTConfig(**experiment["mot_config"])
     model = MoTLMHeadModel(config)
@@ -112,8 +166,9 @@ def main():
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     training_args = TrainingArguments(
-        output_dir=EXPERIMENT_DIR,
-        logging_dir=EXPERIMENT_DIR / "logs",
+        output_dir=args.experiment_dir,
+        logging_dir=args.experiment_dir / "logs",
+        report_to=["neptune"],
         **experiment["training_args"],
     )
 
@@ -123,11 +178,10 @@ def main():
         data_collator=data_collator,
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
-        tokenizer=tokenizer,
+        callbacks=[NeptuneCallback(run=run)],
     )
 
     trainer.train()
-
     trainer.save_model()
 
 
