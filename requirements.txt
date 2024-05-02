@@ -80,7 +80,7 @@ sympy==1.12
 tokenizers==0.15.2
 torch==2.2.2
 tqdm==4.66.2
--e git+https://github.com/szysad/transformers@f633bdc5224b0102289f3f97b5269a31a828f4dc#egg=transformers
+-e git+https://github.com/szysad/transformers@91099f413c7d2e368657a0ab69e40b2fc1a0dc28#egg=transformers
 triton==2.2.0
 types-python-dateutil==2.9.0.20240316
 typing_extensions==4.11.0

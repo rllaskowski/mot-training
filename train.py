@@ -2,12 +2,12 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from re import T
-
+from sched import scheduler
+import torch
 import dotenv
 import neptune
 from datasets import load_dataset
-
+from transformers.optimization import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 import transformers
 from transformers import DataCollatorForLanguageModeling
 from transformers import GPT2TokenizerFast as GPT2Tokenizer
@@ -15,14 +15,15 @@ from transformers import MoTConfig, MoTLMHeadModel, Trainer, TrainingArguments
 from transformers.integrations import NeptuneCallback
 
 EXPERIMENTS = {
-    "mot_paper_small_c4": {
-        # Original MoT model config from the paper
+    "mot_medium_32_8": {
+        # Original MoT-Medium/32E/8 model config from the paper
         # https://arxiv.org/pdf/2310.15961.pdf
         "mot_config": {
             "vocab_size": 50257,
             "n_positions": 1024,
-            "expert_size": 2048,
+            "expert_size": 256,
             "n_embd": 512,
+            "n_expert": 256,
             "n_layer": 8,
             "n_head": 8,
             "n_inner": 1024,
@@ -34,7 +35,7 @@ EXPERIMENTS = {
             "per_device_eval_batch_size": 256,
             "overwrite_output_dir": True,
             "max_steps": 150_000,
-            "save_steps": 10_000,
+            "save_steps": 25_000,
             #"bf16": True,
             "fp16": True,
             # "do_eval": False,
@@ -43,7 +44,7 @@ EXPERIMENTS = {
             "save_total_limit": 2,
             "logging_steps": 100,
         },
-        "dataset": ["c4", "realnewslike"],
+        "dataset": ["c4", "en"],
         "tokenizer": {
             "config": "gpt2",
             "args": {
@@ -57,7 +58,8 @@ EXPERIMENTS = {
         "mot_config": {
             "vocab_size": 50257,
             "n_positions": 1024,
-            "expert_size": 2048,
+            "expert_size": 256,
+            "n_expert": 256,
             "n_embd": 64,
             "n_layer": 1,
             "n_head": 2,
@@ -130,6 +132,20 @@ def _setup() -> Args:
     return args
 
 
+def _get_optimizer(args: Args, model):
+    experiment = EXPERIMENTS[args.experiment_name]
+    opt = torch.optim.AdamW(model.parameters(), lr=experiment["training_args"]["learning_rate"])
+
+    scheduler = get_cosine_schedule_with_warmup(
+        opt,
+        num_warmup_steps=2500,
+        num_training_steps=experiment["training_args"]["max_steps"],
+        num_cycles=0.467,  # so that it end at around 10% of the original learning rate
+    )
+
+    return opt, scheduler
+
+
 def _get_dataset(tokenizer, args: Args):
     raw_dataset = load_dataset(*EXPERIMENTS[args.experiment_name]["dataset"], streaming=True)
 
@@ -179,6 +195,7 @@ def main():
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
         callbacks=[NeptuneCallback(run=run)],
+        optimizers=_get_optimizer(args, model),
     )
 
     trainer.train()
