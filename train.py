@@ -20,13 +20,15 @@ EXPERIMENTS = {
         # https://arxiv.org/pdf/2310.15961.pdf
         "mot_config": {
             "vocab_size": 50257,
-            "n_positions": 1024,
+            "n_positions": 256,
             "expert_size": 256,
-            "n_embd": 512,
             "n_expert": 256,
+            "n_embd": 512,
             "n_layer": 8,
+            # n_inner is ignored if expert_size is not None, but should not be None
+            # TODO: fix in the MoT implementation so that it is not required
+            "n_inner": 32,
             "n_head": 8,
-            "n_inner": 1024,
             "group_size": 32,
         },
         "training_args": {
@@ -36,11 +38,7 @@ EXPERIMENTS = {
             "overwrite_output_dir": True,
             "max_steps": 150_000,
             "save_steps": 25_000,
-            #"bf16": True,
             "fp16": True,
-            # "do_eval": False,
-            # "evaluation_strategy": "steps",
-            # "eval_steps": 50,
             "save_total_limit": 2,
             "logging_steps": 100,
         },
@@ -140,7 +138,7 @@ def _get_optimizer(args: Args, model):
         opt,
         num_warmup_steps=2500,
         num_training_steps=experiment["training_args"]["max_steps"],
-        num_cycles=0.467,  # so that it end at around 10% of the original learning rate
+        num_cycles=0.467,  # so that it ends at around 10% of the original learning rate
     )
 
     return opt, scheduler
@@ -178,6 +176,8 @@ def main():
 
     config = MoTConfig(**experiment["mot_config"])
     model = MoTLMHeadModel(config)
+
+    print("Model parameters:", model.num_parameters() / 1e6, "M")
 
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
