@@ -20,7 +20,7 @@ EXPERIMENTS = {
         # https://arxiv.org/pdf/2310.15961.pdf
         "mot_config": {
             "vocab_size": 50257,
-            "n_positions": 256,
+            "n_positions": 1024,
             "expert_size": 256,
             "n_expert": 256,
             "n_embd": 512,
